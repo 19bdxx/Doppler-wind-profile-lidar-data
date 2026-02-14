@@ -14,6 +14,8 @@ For detailed information about the data structure, field descriptions, and scann
 
 📄 **[雷达数据说明文档.md](./雷达数据说明文档.md)** - Comprehensive Chinese documentation
 
+📊 **[风场风速分析建议报告.md](./风场风速分析建议报告.md)** - Wind field analysis recommendation report / 风场风速分析建议报告
+
 ## Data Files / 数据文件
 
 - `Molas3D_00941_RealTime_20251005_前5000行.csv` - Device 00941 real-time data
