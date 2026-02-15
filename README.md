@@ -90,6 +90,8 @@ A comprehensive Python script for analyzing Radial Wind Speed (RWS) data is prov
 
 ```bash
 # Install dependencies / 安装依赖
+pip install -r requirements.txt
+# Or install manually / 或手动安装
 pip install pandas numpy matplotlib seaborn
 
 # Run analysis with default data file / 使用默认数据文件运行分析
