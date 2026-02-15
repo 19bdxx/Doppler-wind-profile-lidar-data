@@ -12,9 +12,11 @@ For detailed information about the data structure, field descriptions, and scann
 
 有关数据结构、字段说明和扫描模式的详细信息，请参阅：
 
-📄 **[雷达数据说明文档.md](./雷达数据说明文档.md)** - Comprehensive Chinese documentation
+📄 **[雷达数据说明文档.md](./雷达数据说明文档.md)** - Comprehensive Chinese documentation / 雷达数据详细说明
 
 📊 **[风场风速分析建议报告.md](./风场风速分析建议报告.md)** - Wind field analysis recommendation report / 风场风速分析建议报告
+
+🎓 **[三维雷达风电场应用技术文档.md](./三维雷达风电场应用技术文档.md)** - 3D scanning radar applications in wind farms / 三维扫描雷达在风电场中的应用技术文档
 
 ## Data Files / 数据文件
 
