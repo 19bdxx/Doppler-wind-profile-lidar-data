@@ -735,14 +735,25 @@ def main():
     """
     主程序入口
     """
+    import sys
+    
     print("="*60)
     print("多普勒风廓线激光雷达 RWS 分析系统")
     print("="*60)
     
     # 配置参数
-    data_file = 'Molas3D_00941_RealTime_20251005_前5000行.csv'
+    # 支持命令行参数指定数据文件
+    if len(sys.argv) > 1:
+        data_file = sys.argv[1]
+    else:
+        data_file = 'Molas3D_00941_RealTime_20251005_前5000行.csv'
+    
     output_dir = 'output_rws_analysis'
     cnr_threshold = -20  # CNR 阈值 (dB)
+    
+    print(f"\n数据文件: {data_file}")
+    print(f"输出目录: {output_dir}")
+    print(f"CNR 阈值: {cnr_threshold} dB\n")
     
     # 1. 加载数据
     df = load_lidar_data(data_file)
@@ -817,3 +828,12 @@ def main():
 
 if __name__ == '__main__':
     main()
+    
+    print("\n" + "="*60)
+    print("使用说明:")
+    print("  python analysis_rws.py [数据文件路径]")
+    print("  ")
+    print("示例:")
+    print("  python analysis_rws.py Molas3D_00941_RealTime_20251005_前5000行.csv")
+    print("  python analysis_rws.py Molas3D_00943_RealTime_20251005_前5000行.csv")
+    print("="*60)

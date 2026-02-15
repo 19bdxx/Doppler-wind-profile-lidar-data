@@ -92,8 +92,12 @@ A comprehensive Python script for analyzing Radial Wind Speed (RWS) data is prov
 # Install dependencies / 安装依赖
 pip install pandas numpy matplotlib seaborn
 
-# Run analysis / 运行分析
+# Run analysis with default data file / 使用默认数据文件运行分析
 python analysis_rws.py
+
+# Or specify a data file / 或指定数据文件
+python analysis_rws.py Molas3D_00941_RealTime_20251005_前5000行.csv
+python analysis_rws.py Molas3D_00943_RealTime_20251005_前5000行.csv
 
 # Output / 输出
 # Results will be saved in output_rws_analysis/ directory
