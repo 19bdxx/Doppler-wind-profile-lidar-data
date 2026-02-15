@@ -16,6 +16,8 @@ For detailed information about the data structure, field descriptions, and scann
 
 📊 **[风场风速分析建议报告.md](./风场风速分析建议报告.md)** - Wind field analysis recommendation report / 风场风速分析建议报告
 
+📈 **[RWS分析报告.md](./RWS分析报告.md)** - RWS (Radial Wind Speed) comprehensive analysis report / RWS 径向风速完整分析报告
+
 ## Data Files / 数据文件
 
 - `Molas3D_00941_RealTime_20251005_前5000行.csv` - Device 00941 real-time data
@@ -58,3 +60,48 @@ This is **raw measurement data** without wind field retrieval. To obtain wind sp
 Data collection date: October 5, 2025 (00:00:00 UTC+8)
 
 数据采集日期：2025年10月5日（00:00:00 UTC+8）
+
+## Analysis Tools / 分析工具
+
+### RWS Analysis Script / RWS 分析脚本
+
+A comprehensive Python script for analyzing Radial Wind Speed (RWS) data is provided: **`analysis_rws.py`**
+
+提供了完整的 Python 径向风速（RWS）分析脚本：**`analysis_rws.py`**
+
+**Features / 功能:**
+
+- **Single angle combination analysis / 单角度组合分析**
+  - Statistical indicators (mean, median, std, quantiles)
+  - Distance-based trend analysis
+  - Distribution visualization (histogram, boxplot, quantile curves)
+  
+- **Multi-angle comparison / 多角度对比分析**
+  - Azimuth comparison
+  - Elevation comparison
+  - 2D heatmaps (azimuth×distance, elevation×distance)
+  - Wind rose diagram
+  
+- **Quality control / 质量控制**
+  - CNR threshold filtering
+  - Before/after comparison
+
+**Usage / 使用方法:**
+
+```bash
+# Install dependencies / 安装依赖
+pip install pandas numpy matplotlib seaborn
+
+# Run analysis / 运行分析
+python analysis_rws.py
+
+# Output / 输出
+# Results will be saved in output_rws_analysis/ directory
+# 结果将保存在 output_rws_analysis/ 目录中
+```
+
+**Analysis Report / 分析报告:**
+
+See **[RWS分析报告.md](./RWS分析报告.md)** for detailed analysis results, visualizations, and interpretations.
+
+详细的分析结果、可视化图表和解读请参见 **[RWS分析报告.md](./RWS分析报告.md)**。
