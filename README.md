@@ -100,6 +100,12 @@ python analysis_rws.py
 # 结果将保存在 output_rws_analysis/ 目录中
 ```
 
+**Jupyter Notebook / 交互式 Notebook:**
+
+For interactive analysis, use **`analysis_rws.ipynb`**. It provides the same functionality with step-by-step execution and inline visualization.
+
+交互式分析请使用 **`analysis_rws.ipynb`**，提供相同功能并支持逐步执行和内联可视化。
+
 **Analysis Report / 分析报告:**
 
 See **[RWS分析报告.md](./RWS分析报告.md)** for detailed analysis results, visualizations, and interpretations.
