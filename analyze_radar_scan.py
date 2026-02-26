@@ -5,21 +5,25 @@ analyze_radar_scan.py
 自动分析多普勒风廓线激光雷达（Molas3D）长时间扫描模式与调度策略。
 
 功能：
-  1. 读取一个或多个 Molas3D CSV 数据文件。
+  1. 自动扫描 process_data/ 目录（或命令行指定文件）中的所有 CSV。
   2. 提取每束扫描的时间戳、方位角（Azimuth）、仰角（Elevation）。
-  3. 识别仰角层、扫描周期（体扫）、模式切换等调度规律。
-  4. 输出统计摘要（控制台）及图表（PNG 文件）。
+  3. 识别仰角层、方位圈（sweep）、扫描周期（体扫 volume）。
+  4. 输出每个 sweep 的摘要表（CSV）、稀疏轨迹（CSV）及图表（PNG）。
+  5. 汇总所有文件生成分析报告（analysis_report.md）。
 
 用法：
   python3 analyze_radar_scan.py [CSV文件1] [CSV文件2] ...
 
-  若不指定文件，自动搜索当前目录下所有 *_RealTime_*.csv 文件。
+  若不指定文件，自动搜索 process_data/ 子目录下所有 *.csv 文件。
 
-输出文件（保存至脚本所在目录）：
-  <设备ID>_elevation_vs_time.png      — 仰角随时间变化
-  <设备ID>_azimuth_vs_time.png        — 方位角随时间变化
-  <设备ID>_dwell_time_distribution.png — 每层持续时长分布
-  <设备ID>_cycle_period_histogram.png  — 体扫周期分布
+输出文件（保存至 output/ 子目录）：
+  <前缀>_sweep_summary.csv            — 每个 sweep 的摘要表
+  <前缀>_sparse_trajectory.csv        — 0.5s 采样的稀疏轨迹
+  <前缀>_elevation_vs_time.png        — 仰角随时间变化
+  <前缀>_azimuth_vs_time.png          — 方位角随时间变化
+  <前缀>_dwell_time_distribution.png  — 每层持续时长分布
+  <前缀>_cycle_period_histogram.png   — 体扫周期分布
+  analysis_report.md                  — 全部文件汇总分析报告
 """
 
 import sys
@@ -184,6 +188,112 @@ def compute_cycle_periods(beam_df: pd.DataFrame) -> pd.Series:
     return pd.Series(periods).rename("period_seconds")
 
 
+def detect_sweeps(beam_df: pd.DataFrame, az_jump_tol: float = 30.0) -> pd.DataFrame:
+    """
+    在 detect_cycles() 结果基础上进一步检测方位圈（sweep）。
+
+    判定规则：当仰角层切换 **或** 方位角出现显著负跳变（< -az_jump_tol°，
+    即如 350°→10° 的绕圈）时，标记为新 sweep 开始。
+
+    新增列：sweep_id（全局连续编号，从 0 开始）
+    """
+    beam_df = beam_df.copy()
+    az = beam_df["az"].values
+    el_layer = beam_df["el_layer"].values
+
+    sweep_ids = [0]
+    sid = 0
+    for i in range(1, len(beam_df)):
+        az_diff = az[i] - az[i - 1]
+        el_changed = el_layer[i] != el_layer[i - 1]
+        az_jumped = az_diff < -az_jump_tol
+        if el_changed or az_jumped:
+            sid += 1
+        sweep_ids.append(sid)
+    beam_df["sweep_id"] = sweep_ids
+    return beam_df
+
+
+def compute_sweep_summary(beam_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    汇总每个 sweep 的统计摘要。
+
+    返回列：
+      sweep_id, cycle_id, el_layer, el_rounded_deg,
+      start_time, end_time, duration_s,
+      az_min_deg, az_max_deg, az_span_deg, az_arc_deg,
+      n_beams, scan_type (full_circle / sector)
+
+    az_arc_deg：累加所有正向方位步进的总弧度（比 az_span 更能反映
+    绕圈覆盖范围，不受越 0° 截断影响）。
+    """
+    records = []
+    for sid, grp in beam_df.groupby("sweep_id", sort=True):
+        grp = grp.sort_values("_time")
+        el_val = grp["el_rounded"].mode().iloc[0]
+        az_arr = grp["az"].values
+        az_span = float(grp["az"].max() - grp["az"].min())
+        az_diffs = np.diff(az_arr)
+        az_arc = float(az_diffs[az_diffs > 0].sum())
+        scan_type = "full_circle" if az_arc >= 330.0 else "sector"
+        t0 = grp["_time"].min()
+        t1 = grp["_time"].max()
+        records.append({
+            "sweep_id": int(sid),
+            "cycle_id": int(grp["cycle_id"].iloc[0]),
+            "el_layer": int(grp["el_layer"].iloc[0]),
+            "el_rounded_deg": round(float(el_val), 3),
+            "start_time": t0.strftime("%Y/%m/%d %H:%M:%S.%f")[:-3],
+            "end_time": t1.strftime("%Y/%m/%d %H:%M:%S.%f")[:-3],
+            "duration_s": round((t1 - t0).total_seconds(), 3),
+            "az_min_deg": round(float(grp["az"].min()), 3),
+            "az_max_deg": round(float(grp["az"].max()), 3),
+            "az_span_deg": round(az_span, 3),
+            "az_arc_deg": round(az_arc, 3),
+            "n_beams": len(grp),
+            "scan_type": scan_type,
+        })
+    return pd.DataFrame(records)
+
+
+def compute_sparse_trajectory(beam_df: pd.DataFrame,
+                              interval_s: float = 0.5) -> pd.DataFrame:
+    """
+    按时间间隔 interval_s 稀疏采样扫描轨迹，便于可视化动画。
+
+    返回列：sample_time, az_deg, el_deg, el_rounded_deg, sweep_id, cycle_id
+    """
+    t_start = beam_df["_time"].min()
+    t_end = beam_df["_time"].max()
+    t_range = pd.date_range(start=t_start, end=t_end,
+                            freq=f"{interval_s}s")
+    # 将时间序列与采样点统一为 float64（秒级精度）进行最近邻查找
+    beam_sec = (beam_df["_time"].values.astype("datetime64[ms]")
+                .astype("int64") / 1000.0)  # 毫秒→秒
+    sample_sec = np.array([t.timestamp() for t in t_range])
+
+    # 使用 searchsorted 高效查找每个采样点的最近 beam
+    ins = np.searchsorted(beam_sec, sample_sec, side="left").clip(0, len(beam_sec) - 1)
+    # 比较左右邻居，取更近者
+    ins_prev = (ins - 1).clip(0, len(beam_sec) - 1)
+    diff_right = np.abs(beam_sec[ins] - sample_sec)
+    diff_left = np.abs(beam_sec[ins_prev] - sample_sec)
+    best_idx = np.where(diff_left < diff_right, ins_prev, ins)
+
+    rows = []
+    for i, idx in enumerate(best_idx):
+        row = beam_df.iloc[int(idx)]
+        rows.append({
+            "sample_time": t_range[i].strftime("%Y/%m/%d %H:%M:%S.%f")[:-3],
+            "az_deg": round(float(row["az"]), 3),
+            "el_deg": round(float(row["el"]), 3),
+            "el_rounded_deg": round(float(row["el_rounded"]), 3),
+            "sweep_id": int(row["sweep_id"]),
+            "cycle_id": int(row["cycle_id"]),
+        })
+    return pd.DataFrame(rows)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 绘图函数
 # ─────────────────────────────────────────────────────────────────────────────
@@ -277,16 +387,137 @@ def plot_cycle_histogram(periods: pd.Series, device_id: str,
     return path
 
 
+def generate_markdown_report(file_summaries: list, out_path: str) -> None:
+    """
+    生成汇总所有 CSV 文件分析结果的 Markdown 报告。
+
+    Parameters
+    ----------
+    file_summaries : list of dict
+        每个 dict 对应一个文件的分析摘要，由 analyze_file() 返回。
+    out_path : str
+        报告输出路径（.md）。
+    """
+    now_str = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        "# 激光雷达扫描动态分析报告",
+        "",
+        f"**生成时间**：{now_str}  ",
+        f"**数据来源**：process_data/ 目录下所有 CSV 文件  ",
+        f"**处理文件数**：{len(file_summaries)}",
+        "",
+        "---",
+        "",
+    ]
+
+    for s in file_summaries:
+        lines += [
+            f"## {s['fname']}",
+            "",
+            "### 基本信息",
+            "",
+            f"| 项目 | 值 |",
+            f"|------|----|",
+            f"| 设备 ID | {s['device_id']} |",
+            f"| 扫描束总数 | {s['total_beams']} |",
+            f"| 开始时间 | {s['t_start']} |",
+            f"| 结束时间 | {s['t_end']} |",
+            f"| 总时长 | {s['duration_s']:.1f} 秒（{s['duration_s']/60:.2f} 分钟）|",
+            f"| 仰角层数 | {s['n_el_layers']} |",
+            f"| 体扫周期数 | {s['n_cycles']} |",
+            f"| Sweep 总数 | {s['n_sweeps']} |",
+            f"| 扫描模式 | {s['scan_mode']} |",
+            "",
+        ]
+
+        if s['el_layers']:
+            lines += [
+                "### 仰角层概览",
+                "",
+                "| 仰角层 (°) | 束数 | Az 最小 (°) | Az 最大 (°) | Az 跨度 (°) |",
+                "|-----------|------|------------|------------|------------|",
+            ]
+            for el_info in s['el_layers']:
+                lines.append(
+                    f"| {el_info['el']:.3f} | {el_info['cnt']} "
+                    f"| {el_info['az_min']:.3f} | {el_info['az_max']:.3f} "
+                    f"| {el_info['az_span']:.3f} |"
+                )
+            lines.append("")
+
+        if s['cycle_stats']:
+            cs = s['cycle_stats']
+            lines += [
+                "### 体扫周期统计",
+                "",
+                f"| 均值 (s) | 中位数 (s) | 最短 (s) | 最长 (s) |",
+                f"|---------|-----------|---------|---------|",
+                f"| {cs['mean']:.1f} | {cs['median']:.1f} "
+                f"| {cs['min']:.1f} | {cs['max']:.1f} |",
+                "",
+            ]
+
+        lines += [
+            "### Sweep 摘要（前 20 条）",
+            "",
+        ]
+        if s.get("sweep_head"):
+            lines += [
+                "| sweep_id | cycle_id | el(°) | 开始时间 | 结束时间 | 时长(s) "
+                "| Az最小(°) | Az最大(°) | Az跨度(°) | Az弧度(°) | 束数 | 类型 |",
+                "|----------|----------|-------|---------|---------|--------|"
+                "----------|----------|---------|---------|------|------|",
+            ]
+            for r in s["sweep_head"]:
+                lines.append(
+                    f"| {r['sweep_id']} | {r['cycle_id']} "
+                    f"| {r['el_rounded_deg']:.3f} "
+                    f"| {r['start_time']} | {r['end_time']} "
+                    f"| {r['duration_s']:.1f} "
+                    f"| {r['az_min_deg']:.3f} | {r['az_max_deg']:.3f} "
+                    f"| {r['az_span_deg']:.3f} | {r['az_arc_deg']:.3f} "
+                    f"| {r['n_beams']} | {r['scan_type']} |"
+                )
+        lines += ["", "---", ""]
+
+    lines += [
+        "## 附录：输出文件说明",
+        "",
+        "| 文件名模式 | 说明 |",
+        "|-----------|------|",
+        "| `*_sweep_summary.csv` | 每个 sweep 的详细摘要（仰角、起止时间、Az 范围等）|",
+        "| `*_sparse_trajectory.csv` | 每 0.5 秒采样一次的扫描轨迹，可用于动画可视化 |",
+        "| `*_elevation_vs_time.png` | 仰角随时间变化散点图 |",
+        "| `*_azimuth_vs_time.png` | 方位角随时间变化图（按仰角层着色）|",
+        "| `*_dwell_time_distribution.png` | 各仰角层停留时长箱线图 |",
+        "| `*_cycle_period_histogram.png` | 体扫周期时长分布直方图 |",
+        "",
+        "> 所有输出文件保存在 `output/` 子目录中。",
+    ]
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"\n  已生成分析报告: {out_path}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 主分析函数
 # ─────────────────────────────────────────────────────────────────────────────
 
-def analyze_file(csv_path: str, out_dir: str) -> None:
-    """分析单个 CSV 文件，输出统计摘要和图表。"""
+def analyze_file(csv_path: str, out_dir: str) -> dict:
+    """
+    分析单个 CSV 文件，输出统计摘要、图表、sweep 摘要 CSV 及稀疏轨迹 CSV。
+
+    Returns
+    -------
+    dict : 文件分析摘要，用于生成 Markdown 报告。返回 None 表示文件无有效数据。
+    """
     fname = os.path.basename(csv_path)
+    # 从文件名提取前缀（去掉 .csv），用于输出文件命名
+    stem = Path(fname).stem
     # 从文件名提取设备 ID（例如 Molas3D_00941_...）
     parts = fname.split("_")
-    device_id = parts[1] if len(parts) >= 2 else fname.replace(".csv", "")
+    device_id = "_".join(parts[:2]) if len(parts) >= 2 else stem
 
     print(f"\n{'=' * 60}")
     print(f"文件: {fname}")
@@ -297,7 +528,7 @@ def analyze_file(csv_path: str, out_dir: str) -> None:
     beam_df = load_csv(csv_path)
     if beam_df.empty:
         print("  [警告] 无有效数据，跳过。")
-        return
+        return None
 
     total_beams = len(beam_df)
     t_start = beam_df["_time"].min()
@@ -309,16 +540,24 @@ def analyze_file(csv_path: str, out_dir: str) -> None:
     print(f"  时间跨度         : {t_start}  →  {t_end}")
     print(f"  总时长           : {duration_s:.1f} 秒 ({duration_s/60:.2f} 分钟)")
 
-    # 仰角层分析
+    # 仰角层 & 体扫周期分析
     beam_df, el_layers = detect_cycles(beam_df)
     print(f"\n【仰角层】")
     print(f"  发现 {len(el_layers)} 个仰角层: {[f'{e:.3f}°' for e in el_layers]}")
+
+    el_layer_infos = []
     for el in el_layers:
         cnt = (beam_df["el_rounded"] == el).sum()
         az_vals = beam_df[beam_df["el_rounded"] == el]["az"]
+        az_min = az_vals.min()
+        az_max = az_vals.max()
+        az_span = az_max - az_min
+        el_layer_infos.append({"el": el, "cnt": cnt,
+                                "az_min": az_min, "az_max": az_max,
+                                "az_span": az_span})
         print(f"  El={el:.3f}°  → {cnt} 束，"
-              f"Az 范围 [{az_vals.min():.3f}°, {az_vals.max():.3f}°]，"
-              f"Az 跨度 {az_vals.max() - az_vals.min():.3f}°")
+              f"Az 范围 [{az_min:.3f}°, {az_max:.3f}°]，"
+              f"Az 跨度 {az_span:.3f}°")
 
     # 方位角扫描步进分析
     print(f"\n【方位角扫描步进（各仰角层）】")
@@ -333,19 +572,25 @@ def analyze_file(csv_path: str, out_dir: str) -> None:
                       f"步进范围 [{pos_steps.min():.3f}°, {pos_steps.max():.3f}°]")
 
     # 体扫周期分析
-    n_cycles = beam_df["cycle_id"].max() + 1
+    n_cycles = int(beam_df["cycle_id"].max()) + 1
     print(f"\n【体扫周期】")
     print(f"  检测到 {n_cycles} 个体扫周期")
 
+    cycle_stats = None
     if n_cycles >= 2:
         periods = compute_cycle_periods(beam_df)
         valid_periods = periods[periods > 0]
+        cycle_stats = {
+            "mean": valid_periods.mean(),
+            "median": valid_periods.median(),
+            "min": valid_periods.min(),
+            "max": valid_periods.max(),
+        }
         print(f"  周期时长统计（秒）: "
-              f"均值={valid_periods.mean():.1f}, "
-              f"中位={valid_periods.median():.1f}, "
-              f"最短={valid_periods.min():.1f}, "
-              f"最长={valid_periods.max():.1f}")
-        # 检测异常周期（>1.5×中位值可能为模式切换/插入扫描）
+              f"均值={cycle_stats['mean']:.1f}, "
+              f"中位={cycle_stats['median']:.1f}, "
+              f"最短={cycle_stats['min']:.1f}, "
+              f"最长={cycle_stats['max']:.1f}")
         median_p = valid_periods.median()
         outliers = valid_periods[valid_periods > 1.5 * median_p]
         if not outliers.empty:
@@ -377,58 +622,116 @@ def analyze_file(csv_path: str, out_dir: str) -> None:
               f"最长={intervals.max():.3f}s")
         print(f"  等效采样频率: {1/intervals.median():.2f} Hz")
 
+    # Sweep 检测
+    beam_df = detect_sweeps(beam_df)
+    sweep_df = compute_sweep_summary(beam_df)
+    n_sweeps = len(sweep_df)
+    print(f"\n【Sweep（方位圈）】")
+    print(f"  检测到 {n_sweeps} 个 sweep")
+    full_circles = (sweep_df["scan_type"] == "full_circle").sum()
+    sectors = n_sweeps - full_circles
+    print(f"  全圈扫描: {full_circles}，扇形扫描: {sectors}")
+
+    # 保存 sweep 摘要 CSV
+    sweep_csv_path = os.path.join(out_dir, f"{stem}_sweep_summary.csv")
+    sweep_df.to_csv(sweep_csv_path, index=False, encoding="utf-8-sig")
+    print(f"  已保存 sweep 摘要: {sweep_csv_path}")
+
+    # 保存稀疏轨迹 CSV
+    traj_df = compute_sparse_trajectory(beam_df, interval_s=0.5)
+    traj_csv_path = os.path.join(out_dir, f"{stem}_sparse_trajectory.csv")
+    traj_df.to_csv(traj_csv_path, index=False, encoding="utf-8-sig")
+    print(f"  已保存稀疏轨迹: {traj_csv_path}")
+
     # 生成图表
     print(f"\n【生成图表】")
     out_paths = []
-    out_paths.append(plot_el_vs_time(beam_df, el_layers, device_id, out_dir))
-    out_paths.append(plot_az_vs_time(beam_df, el_layers, device_id, out_dir))
-    out_paths.append(plot_dwell_distribution(dwell_df, el_layers, device_id, out_dir))
+    out_paths.append(plot_el_vs_time(beam_df, el_layers, stem, out_dir))
+    out_paths.append(plot_az_vs_time(beam_df, el_layers, stem, out_dir))
+    out_paths.append(plot_dwell_distribution(dwell_df, el_layers, stem, out_dir))
     if not periods.empty:
-        p = plot_cycle_histogram(periods, device_id, out_dir)
+        p = plot_cycle_histogram(periods, stem, out_dir)
         if p:
             out_paths.append(p)
-
     for p in out_paths:
         if p:
             print(f"  已保存: {p}")
 
+    # 扫描模式判断
     print(f"\n【扫描模式判断】")
     if len(el_layers) == 1:
-        print("  → 单仰角扇形扫描（Single-Elevation Sector Scan）")
+        scan_mode = "单仰角扇形扫描（Single-Elevation Sector Scan）"
     elif len(el_layers) == 2:
-        print("  → 双仰角扇形 DBS 扫描（Two-Elevation Sector DBS Scan）")
+        scan_mode = "双仰角扇形 DBS 扫描（Two-Elevation Sector DBS Scan）"
     else:
-        print(f"  → 多仰角扇形扫描（{len(el_layers)}-Elevation Sector Scan）")
+        scan_mode = f"多仰角体扫（{len(el_layers)}-Elevation Volume Scan）"
+    print(f"  → {scan_mode}")
     if n_cycles >= 2:
         print(f"  → 存在 {n_cycles} 个体扫周期，平均周期约 "
               f"{periods.mean():.1f} 秒")
     else:
         print("  → 数据量不足以判断完整体扫周期（建议使用完整数据文件）")
 
+    return {
+        "fname": fname,
+        "device_id": device_id,
+        "total_beams": total_beams,
+        "t_start": str(t_start),
+        "t_end": str(t_end),
+        "duration_s": duration_s,
+        "n_el_layers": len(el_layers),
+        "n_cycles": n_cycles,
+        "n_sweeps": n_sweeps,
+        "scan_mode": scan_mode,
+        "el_layers": el_layer_infos,
+        "cycle_stats": cycle_stats,
+        "sweep_head": sweep_df.head(20).to_dict(orient="records"),
+    }
+
 
 def main():
-    # 确定输出目录（脚本所在目录）
-    out_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = os.path.dirname(os.path.abspath(__file__))
 
     # 确定输入文件
     if len(sys.argv) > 1:
         csv_files = sys.argv[1:]
+        out_dir = script_dir
     else:
-        pattern = os.path.join(out_dir, "*_RealTime_*.csv")
+        # 默认扫描 process_data/ 子目录
+        data_dir = os.path.join(script_dir, "process_data")
+        if not os.path.isdir(data_dir):
+            data_dir = script_dir
+        pattern = os.path.join(data_dir, "*.csv")
         csv_files = sorted(glob.glob(pattern))
         if not csv_files:
-            print("未找到 CSV 文件。请指定文件路径，或将 CSV 文件放在脚本所在目录。")
+            print("未在 process_data/ 目录下找到 CSV 文件。"
+                  "请指定文件路径，或将 CSV 文件放入 process_data/ 目录。")
             sys.exit(1)
+        # 输出到 output/ 子目录
+        out_dir = os.path.join(script_dir, "output")
+
+    os.makedirs(out_dir, exist_ok=True)
 
     print(f"共发现 {len(csv_files)} 个 CSV 文件")
+    print(f"输出目录: {out_dir}")
+
+    file_summaries = []
     for f in csv_files:
         if not os.path.isfile(f):
             print(f"[警告] 文件不存在，跳过: {f}")
             continue
-        analyze_file(f, out_dir)
+        result = analyze_file(f, out_dir)
+        if result is not None:
+            file_summaries.append(result)
+
+    # 生成汇总 Markdown 报告
+    if file_summaries:
+        report_path = os.path.join(out_dir, "analysis_report.md")
+        generate_markdown_report(file_summaries, report_path)
 
     print(f"\n{'=' * 60}")
-    print("分析完成。")
+    print(f"分析完成。共处理 {len(file_summaries)} 个文件，"
+          f"输出目录: {out_dir}")
 
 
 if __name__ == "__main__":
